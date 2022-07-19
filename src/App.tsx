@@ -321,7 +321,7 @@ export function App() {
                             Message: {m.msgId.substring(0, 10)}...{" "}
                             {new Date(m.createdAt * 1000).toISOString()}
                             <a
-                                href="#"
+                                href="_none"
                                 onClick={(e) => {
                                     e.preventDefault();
                                     decryptMessage(m);
