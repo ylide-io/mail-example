@@ -86,6 +86,8 @@ export function App() {
             return;
         }
         (async () => {
+            await keystore.init();
+
             const _reader = await Ylide.instantiateReader(
                 EverscaleReadingController,
                 {
@@ -98,9 +100,8 @@ export function App() {
                     dev: true,
                 }
             );
+            // _sender.requestAuthentication()
             const _account = await _sender.getAuthenticatedAccount();
-
-            await keystore.load();
 
             setReader(_reader as EverscaleReadingController);
             setSender(_sender as EverscaleSendingController);
