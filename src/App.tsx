@@ -6,20 +6,21 @@ import {
 } from "@ylide/everscale";
 import {
     Ylide,
-    BrowserLocalStorage,
     IGenericAccount,
     IMessage,
     MessageContentV3,
     YlideKeyStore,
     MessageChunks,
     MessageContainer,
+    BrowserIframeStorage,
 } from "@ylide/sdk";
+import SmartBuffer from "@ylide/smart-buffer";
 
 Ylide.registerReader(EverscaleReadingController);
 Ylide.registerSender(EverscaleSendingController);
 
 export function App() {
-    const storage = useMemo(() => new BrowserLocalStorage(), []);
+    const storage = useMemo(() => new BrowserIframeStorage(), []);
     const keystore = useMemo(
         () =>
             new YlideKeyStore(storage, {
@@ -88,12 +89,13 @@ export function App() {
         (async () => {
             await keystore.init();
 
-            const _reader = await Ylide.instantiateReader(
+            // @ts-ignore
+            const _reader = (window._reader = await Ylide.instantiateReader(
                 EverscaleReadingController,
                 {
                     dev: true,
                 }
-            );
+            ));
             const _sender = await Ylide.instantiateSender(
                 EverscaleSendingController,
                 {
@@ -196,14 +198,43 @@ export function App() {
             if (!recipientPublicKey) {
                 throw new Error("Recipient public key not found");
             }
-            await sender.sendMessage([0, 0, 0, 1], keypair, content, [
-                {
-                    address: recipient,
-                    publicKey: recipientPublicKey,
-                },
-            ]);
+            const msgId = await sender.sendMessage(
+                [0, 0, 0, 1],
+                keypair,
+                content,
+                [
+                    {
+                        address: recipient,
+                        publicKey: recipientPublicKey,
+                    },
+                ]
+            );
+            alert(`Message sent, ID: ${msgId}`);
         });
     }, [account, keys, reader, recipient, sender, subject, text]);
+
+    const writeNativeEmail = useCallback(async () => {
+        if (!account || !reader || !sender) {
+            return;
+        }
+        const content = MessageContentV3.plain(subject, text);
+
+        const recipientNativePublicKey =
+            await reader.extractNativePublicKeyFromAddress(recipient);
+        if (!recipientNativePublicKey) {
+            throw new Error("Recipient native public key not found");
+        }
+        const { content: encContent, key } =
+            MessageContainer.encodeContent(content);
+        await sender.sendNativeMessage([0, 0, 0, 1], encContent, key, [
+            {
+                address: recipient,
+                publicKey: new SmartBuffer(
+                    recipientNativePublicKey
+                ).toHexString(),
+            },
+        ]);
+    }, [account, reader, recipient, sender, subject, text]);
 
     const readMessages = useCallback(async () => {
         if (!reader || !account) {
@@ -309,6 +340,7 @@ export function App() {
                         onChange={(e) => setText(e.target.value)}
                     />
                     <button onClick={writeEmail}>Send</button>
+                    <button onClick={writeNativeEmail}>Send natively</button>
                 </div>
             ) : null}
             {account && keys.length && isKeyRegistered ? (
