@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import {
-    EverscaleReadingController,
-    EverscaleSendingController,
+    EverscaleBlockchainController,
+    everscaleBlockchainFactory,
+    EverscaleWalletController,
+    everscaleWalletFactory,
 } from "@ylide/everscale";
 import {
     Ylide,
@@ -10,14 +12,12 @@ import {
     IMessage,
     MessageContentV3,
     YlideKeyStore,
-    MessageChunks,
-    MessageContainer,
     BrowserIframeStorage,
+    sha256,
 } from "@ylide/sdk";
-import SmartBuffer from "@ylide/smart-buffer";
 
-Ylide.registerReader(EverscaleReadingController);
-Ylide.registerSender(EverscaleSendingController);
+Ylide.registerBlockchainFactory(everscaleBlockchainFactory);
+Ylide.registerWalletFactory(everscaleWalletFactory);
 
 export function App() {
     const storage = useMemo(() => new BrowserIframeStorage(), []);
@@ -31,10 +31,11 @@ export function App() {
     );
 
     const [isWalletAvailable, setIsWalletAvailable] = useState(false);
-    const [sender, setSender] = useState<EverscaleSendingController | null>(
+    const [ylide, setYlide] = useState<Ylide | null>(null);
+    const [sender, setSender] = useState<EverscaleWalletController | null>(
         null
     );
-    const [reader, setReader] = useState<EverscaleReadingController | null>(
+    const [reader, setReader] = useState<EverscaleBlockchainController | null>(
         null
     );
     const [account, setAccount] = useState<IGenericAccount | null>(null);
@@ -61,7 +62,7 @@ export function App() {
                 return null;
             }
             try {
-                return sender.deriveMessagingKeypair(magicString);
+                return sender.signMagicString(magicString);
             } catch (err) {
                 return null;
             }
@@ -77,7 +78,7 @@ export function App() {
     useEffect(() => {
         (async () => {
             const isAvailable =
-                await EverscaleSendingController.isWalletAvailable();
+                await everscaleWalletFactory.isWalletAvailable();
             setIsWalletAvailable(isAvailable);
         })();
     }, []);
@@ -89,24 +90,16 @@ export function App() {
         (async () => {
             await keystore.init();
 
-            // @ts-ignore
-            const _reader = (window._reader = await Ylide.instantiateReader(
-                EverscaleReadingController,
-                {
+            const _ylide = new Ylide(keystore);
+            const { blockchainController, walletController } =
+                await _ylide.addWallet("everscale", "everwallet", {
                     dev: true,
-                }
-            ));
-            const _sender = await Ylide.instantiateSender(
-                EverscaleSendingController,
-                {
-                    dev: true,
-                }
-            );
-            // _sender.requestAuthentication()
-            const _account = await _sender.getAuthenticatedAccount();
+                });
+            const _account = await walletController.getAuthenticatedAccount();
 
-            setReader(_reader as EverscaleReadingController);
-            setSender(_sender as EverscaleSendingController);
+            setYlide(_ylide);
+            setReader(blockchainController as EverscaleBlockchainController);
+            setSender(walletController as EverscaleWalletController);
             setAccount(_account);
             setKeys([...keystore.keys]);
         })();
@@ -125,8 +118,8 @@ export function App() {
                 setIsKeyRegistered(false);
             } else {
                 if (
-                    pk.length === key.publicKey.length &&
-                    pk.every((e, idx) => e === key.publicKey[idx])
+                    pk.bytes.length === key.publicKey.length &&
+                    pk.bytes.every((e, idx) => e === key.publicKey[idx])
                 ) {
                     setIsKeyRegistered(true);
                 } else {
@@ -162,6 +155,7 @@ export function App() {
         const key = await keystore.create(
             "For your first key",
             "everscale",
+            "everwallet",
             account.address,
             passwordForKey
         );
@@ -185,56 +179,19 @@ export function App() {
         await sender.attachPublicKey(key.publicKey);
     }, [keys, sender]);
 
-    const writeEmail = useCallback(async () => {
-        if (!keys.length || !account || !reader || !sender) {
+    const writeMessage = useCallback(async () => {
+        if (!keys.length || !account || !reader || !sender || !ylide) {
             return;
         }
         const content = MessageContentV3.plain(subject, text);
-        const key = keys[0].key;
-        await key.execute("Sending message", async (keypair) => {
-            const recipientPublicKey = await reader.extractPublicKeyFromAddress(
-                recipient
-            );
-            if (!recipientPublicKey) {
-                throw new Error("Recipient public key not found");
-            }
-            const msgId = await sender.sendMessage(
-                [0, 0, 0, 1],
-                keypair,
-                content,
-                [
-                    {
-                        address: recipient,
-                        publicKey: recipientPublicKey,
-                    },
-                ]
-            );
-            alert(`Message sent, ID: ${msgId}`);
+        const msgId = await ylide.sendMessage({
+            wallet: sender,
+            sender: account,
+            content,
+            recipients: [recipient],
         });
-    }, [account, keys, reader, recipient, sender, subject, text]);
-
-    const writeNativeEmail = useCallback(async () => {
-        if (!account || !reader || !sender) {
-            return;
-        }
-        const content = MessageContentV3.plain(subject, text);
-
-        const recipientNativePublicKey =
-            await reader.extractNativePublicKeyFromAddress(recipient);
-        if (!recipientNativePublicKey) {
-            throw new Error("Recipient native public key not found");
-        }
-        const { content: encContent, key } =
-            MessageContainer.encodeContent(content);
-        await sender.sendNativeMessage([0, 0, 0, 1], encContent, key, [
-            {
-                address: recipient,
-                publicKey: new SmartBuffer(
-                    recipientNativePublicKey
-                ).toHexString(),
-            },
-        ]);
-    }, [account, reader, recipient, sender, subject, text]);
+        alert(`Sent ${msgId}`);
+    }, [account, keys.length, reader, recipient, sender, subject, text, ylide]);
 
     const readMessages = useCallback(async () => {
         if (!reader || !account) {
@@ -246,9 +203,19 @@ export function App() {
         setMessages(msgs);
     }, [reader, account]);
 
+    const readSentMessages = useCallback(async () => {
+        if (!reader || !account) {
+            return;
+        }
+        const msgs = await reader.retrieveMessageHistoryByDates(
+            reader.uint256ToAddress(sha256(account.address))
+        );
+        setMessages(msgs);
+    }, [reader, account]);
+
     const decryptMessage = useCallback(
         async (m: IMessage) => {
-            if (!reader || !keys.length) {
+            if (!reader || !keys.length || !account || !ylide) {
                 return;
             }
             const content = await reader.retrieveAndVerifyMessageContent(m);
@@ -258,24 +225,14 @@ export function App() {
             if (content.corrupted) {
                 return alert("Content is corrupted");
             }
-            const key = keys[0].key;
-            const unpackedContent = await MessageChunks.unpackContentFromChunks(
-                [content.content]
-            );
-            let symmKey;
-            await key.execute("read mail", async (keypair) => {
-                symmKey = keypair.decrypt(m.key, unpackedContent.publicKey);
-            });
-            if (!symmKey) {
-                return alert("Decryption key is not accessable");
-            }
-            const decodedContent = MessageContainer.decodeContent(
-                unpackedContent.content,
-                symmKey
+            const decodedContent = await ylide.decryptMessageContent(
+                m,
+                content,
+                account.address
             );
             alert(decodedContent.subject + "\n\n" + decodedContent.content);
         },
-        [keys, reader]
+        [keys, reader, account, ylide]
     );
 
     return (
@@ -339,14 +296,16 @@ export function App() {
                         value={text}
                         onChange={(e) => setText(e.target.value)}
                     />
-                    <button onClick={writeEmail}>Send</button>
-                    <button onClick={writeNativeEmail}>Send natively</button>
+                    <button onClick={writeMessage}>Send</button>
                 </div>
             ) : null}
             {account && keys.length && isKeyRegistered ? (
                 <div style={{ display: "flex", flexDirection: "column" }}>
                     <button onClick={readMessages}>
                         Read messages from blockchain
+                    </button>
+                    <button onClick={readSentMessages}>
+                        Read sent messages from blockchain
                     </button>
                     {messages.map((m) => (
                         <div>
