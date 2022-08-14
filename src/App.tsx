@@ -7,19 +7,32 @@ import {
     everscaleWalletFactory,
 } from "@ylide/everscale";
 import {
+    EthereumBlockchainController,
+    ethereumBlockchainFactory,
+    EthereumWalletController,
+    ethereumWalletFactory,
+} from "@ylide/ethereum";
+import {
     Ylide,
     IGenericAccount,
     IMessage,
     MessageContentV3,
     YlideKeyStore,
     BrowserIframeStorage,
-    sha256,
+    MessagesList,
+    BlockchainSourceSubjectType,
 } from "@ylide/sdk";
+import Web3 from "web3";
+import moment from "moment";
 
+Ylide.registerBlockchainFactory(ethereumBlockchainFactory);
 Ylide.registerBlockchainFactory(everscaleBlockchainFactory);
+Ylide.registerWalletFactory(ethereumWalletFactory);
 Ylide.registerWalletFactory(everscaleWalletFactory);
 
 export function App() {
+    const inboxMessagesList = useMemo(() => new MessagesList(), []);
+    const sentMessagesList = useMemo(() => new MessagesList(), []);
     const storage = useMemo(() => new BrowserIframeStorage(), []);
     const keystore = useMemo(
         () =>
@@ -32,16 +45,15 @@ export function App() {
 
     const [isWalletAvailable, setIsWalletAvailable] = useState(false);
     const [ylide, setYlide] = useState<Ylide | null>(null);
-    const [sender, setSender] = useState<EverscaleWalletController | null>(
-        null
-    );
-    const [reader, setReader] = useState<EverscaleBlockchainController | null>(
+    const [sender, setSender] = useState<EthereumWalletController | null>(null);
+    const [reader, setReader] = useState<EthereumBlockchainController | null>(
         null
     );
     const [account, setAccount] = useState<IGenericAccount | null>(null);
     const [keys, setKeys] = useState<YlideKeyStore["keys"]>([]);
     const [isKeyRegistered, setIsKeyRegistered] = useState(false);
-    const [messages, setMessages] = useState<IMessage[]>([]);
+    const [inboxMessages, setInboxMessages] = useState<IMessage[]>([]);
+    const [sentMessages, setSentMessages] = useState<IMessage[]>([]);
 
     const [recipient, setRecipient] = useState("");
     const [subject, setSubject] = useState("");
@@ -51,10 +63,33 @@ export function App() {
         return prompt(`Enter Ylide password for ${reason}`);
     }, []);
 
+    useEffect(() => {
+        const handler = () => {
+            console.log("window update");
+            setInboxMessages(inboxMessagesList.getWindow().map((w) => w.link));
+        };
+        inboxMessagesList.on("windowUpdate", handler);
+        return () => {
+            inboxMessagesList.off("windowUpdate", handler);
+        };
+    }, [inboxMessagesList]);
+
+    useEffect(() => {
+        const handler = () => {
+            console.log("window update");
+            setSentMessages(sentMessagesList.getWindow().map((w) => w.link));
+        };
+        sentMessagesList.on("windowUpdate", handler);
+        return () => {
+            sentMessagesList.off("windowUpdate", handler);
+        };
+    }, [sentMessagesList]);
+
     const handleDeriveRequest = useCallback(
         async (
             reason: string,
             blockchain: string,
+            wallet: string,
             address: string,
             magicString: string
         ) => {
@@ -77,8 +112,7 @@ export function App() {
 
     useEffect(() => {
         (async () => {
-            const isAvailable =
-                await everscaleWalletFactory.isWalletAvailable();
+            const isAvailable = await ethereumWalletFactory.isWalletAvailable();
             setIsWalletAvailable(isAvailable);
         })();
     }, []);
@@ -92,28 +126,63 @@ export function App() {
 
             const _ylide = new Ylide(keystore);
             const { blockchainController, walletController } =
-                await _ylide.addWallet("everscale", "everwallet", {
+                await _ylide.addWallet("ethereum", "web3", {
                     dev: true,
+                    readWeb3Provider: new Web3.providers.HttpProvider(
+                        "http://localhost:8545/"
+                    ),
                 });
+            const rr = await _ylide.addBlockchain("everscale", { dev: true });
             const _account = await walletController.getAuthenticatedAccount();
 
+            if (_account) {
+                inboxMessagesList.addReader(blockchainController, undefined, {
+                    type: BlockchainSourceSubjectType.RECIPIENT,
+                    address: blockchainController.addressToUint256(
+                        _account.address
+                    ),
+                });
+                inboxMessagesList.addReader(rr, undefined, {
+                    type: BlockchainSourceSubjectType.RECIPIENT,
+                    address: blockchainController.addressToUint256(
+                        _account.address
+                    ),
+                });
+                sentMessagesList.addReader(blockchainController, undefined, {
+                    type: BlockchainSourceSubjectType.RECIPIENT,
+                    address: Ylide.getSentAddress(
+                        blockchainController.addressToUint256(_account.address)
+                    ),
+                });
+                sentMessagesList.addReader(rr, undefined, {
+                    type: BlockchainSourceSubjectType.RECIPIENT,
+                    address: Ylide.getSentAddress(
+                        blockchainController.addressToUint256(_account.address)
+                    ),
+                });
+
+                inboxMessagesList.readFirstPage();
+                sentMessagesList.readFirstPage();
+            }
+
             setYlide(_ylide);
-            setReader(blockchainController as EverscaleBlockchainController);
-            setSender(walletController as EverscaleWalletController);
+            setReader(blockchainController as EthereumBlockchainController);
+            setSender(walletController as EthereumWalletController);
             setAccount(_account);
             setKeys([...keystore.keys]);
         })();
-    }, [isWalletAvailable, keystore]);
+    }, [isWalletAvailable, keystore, inboxMessagesList, sentMessagesList]);
 
     useEffect(() => {
-        if (!reader || !account || keys.length === 0) {
+        if (!sender || !account || keys.length === 0) {
             return;
         }
         (async () => {
             const key = keys[0].key;
-            const pk = await reader.extractPublicKeyFromAddress(
-                account.address
-            );
+            const pk =
+                await sender.blockchainController.extractPublicKeyFromAddress(
+                    account.address
+                );
             if (!pk) {
                 setIsKeyRegistered(false);
             } else {
@@ -127,7 +196,7 @@ export function App() {
                 }
             }
         })();
-    }, [account, keys, reader]);
+    }, [account, keys, sender]);
 
     const connectAccount = useCallback(async () => {
         if (!sender) {
@@ -154,8 +223,8 @@ export function App() {
         }
         const key = await keystore.create(
             "For your first key",
-            "everscale",
-            "everwallet",
+            "ethereum",
+            "web3",
             account.address,
             passwordForKey
         );
@@ -194,23 +263,28 @@ export function App() {
     }, [account, keys.length, reader, recipient, sender, subject, text, ylide]);
 
     const readMessages = useCallback(async () => {
-        if (!reader || !account) {
+        if (!reader || !sender || !account) {
             return;
         }
-        const msgs = await reader.retrieveMessageHistoryByDates(
-            account.address
-        );
-        setMessages(msgs);
-    }, [reader, account]);
+        console.log("reader: ", reader);
+        // const msgs = await reader.retrieveMessageHistoryByDates(
+        //     sender.blockchainController.addressToUint256(account.address)
+        // );
+        // setInboxMessages(msgs);
+        // setInboxMessages(msgs);
+    }, [sender, reader, account]);
 
     const readSentMessages = useCallback(async () => {
         if (!reader || !account) {
             return;
         }
-        const msgs = await reader.retrieveMessageHistoryByDates(
-            reader.uint256ToAddress(sha256(account.address))
-        );
-        setMessages(msgs);
+        // const msgs = await reader.retrieveMessageHistoryByDates(
+        //     reader.addressToUint256(
+        //         reader.uint256ToAddress(sha256(account.address))
+        //     )
+        // );
+        // setInboxMessages(msgs);
+        // setInboxMessages(msgs);
     }, [reader, account]);
 
     const decryptMessage = useCallback(
@@ -218,7 +292,11 @@ export function App() {
             if (!reader || !keys.length || !account || !ylide) {
                 return;
             }
-            const content = await reader.retrieveAndVerifyMessageContent(m);
+            const { blockchain } = await ylide.getMessageControllers(
+                m,
+                reader.addressToUint256(account.address)
+            );
+            const content = await blockchain.retrieveAndVerifyMessageContent(m);
             if (!content) {
                 return alert("Content not found");
             }
@@ -300,28 +378,69 @@ export function App() {
                 </div>
             ) : null}
             {account && keys.length && isKeyRegistered ? (
-                <div style={{ display: "flex", flexDirection: "column" }}>
-                    <button onClick={readMessages}>
-                        Read messages from blockchain
-                    </button>
-                    <button onClick={readSentMessages}>
-                        Read sent messages from blockchain
-                    </button>
-                    {messages.map((m) => (
-                        <div>
-                            Message: {m.msgId.substring(0, 10)}...{" "}
-                            {new Date(m.createdAt * 1000).toISOString()}
-                            <a
-                                href="_none"
-                                onClick={(e) => {
-                                    e.preventDefault();
-                                    decryptMessage(m);
-                                }}
-                            >
-                                Decrypt
-                            </a>
-                        </div>
-                    ))}
+                <div
+                    style={{
+                        display: "flex",
+                        flexDirection: "row",
+                        marginTop: 20,
+                    }}
+                >
+                    <div
+                        style={{
+                            flexGrow: 1,
+                            flexBasis: 0,
+                            display: "flex",
+                            flexDirection: "column",
+                        }}
+                    >
+                        <h3>Inbox:</h3>
+                        {inboxMessages.map((m) => (
+                            <div>
+                                Msg: {m.msgId.substring(0, 10)}... , Sender:{" "}
+                                {m.senderAddress.substring(0, 10)}..., Date:{" "}
+                                {moment(new Date(m.createdAt * 1000)).format(
+                                    "HH:mm:ss DD.MM.YYYY"
+                                )}
+                                <a
+                                    href="_none"
+                                    onClick={(e) => {
+                                        e.preventDefault();
+                                        decryptMessage(m);
+                                    }}
+                                >
+                                    Decrypt
+                                </a>
+                            </div>
+                        ))}
+                    </div>
+                    <div
+                        style={{
+                            flexGrow: 1,
+                            flexBasis: 0,
+                            display: "flex",
+                            flexDirection: "column",
+                        }}
+                    >
+                        <h3>Sent:</h3>
+                        {sentMessages.map((m) => (
+                            <div>
+                                Msg: {m.msgId.substring(0, 10)}... , Sender:{" "}
+                                {m.senderAddress.substring(0, 10)}..., Date:{" "}
+                                {moment(new Date(m.createdAt * 1000)).format(
+                                    "HH:mm:ss DD.MM.YYYY"
+                                )}
+                                <a
+                                    href="_none"
+                                    onClick={(e) => {
+                                        e.preventDefault();
+                                        decryptMessage(m);
+                                    }}
+                                >
+                                    Decrypt
+                                </a>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             ) : null}
         </div>

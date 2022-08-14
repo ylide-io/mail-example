@@ -1,0 +1,35 @@
+.mailbox {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+}
+
+.mailbox-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 10px 20px;
+    border-bottom: 1px solid #e0e0e0;
+    // background-color: rgba(255, 0, 0, 0.2);
+}
+
+.mailbox-item-enter {
+    opacity: 0;
+    max-height: 0;
+}
+.mailbox-item-enter-active {
+    opacity: 1;
+    max-height: 100px;
+    transition: all 400ms linear;
+}
+.mailbox-item-exit {
+    opacity: 1;
+    max-height: 100px;
+}
+.mailbox-item-exit-active {
+    opacity: 0;
+    max-height: 0;
+    transition: all 400ms linear;
+}
