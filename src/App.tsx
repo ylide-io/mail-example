@@ -11,20 +11,17 @@ import {
     everscaleWalletFactory,
 } from "@ylide/everscale";
 import {
-    EthereumBlockchainController,
     evmFactories,
-    EthereumWalletController,
     ethereumWalletFactory,
     EVMNetwork,
     EVM_NAMES,
 } from "@ylide/ethereum";
 import {
     Ylide,
-    IGenericAccount,
     IMessage,
     MessageContentV3,
     YlideKeyStore,
-    BrowserIframeStorage,
+    BrowserLocalStorage,
     MessagesList,
     BlockchainSourceSubjectType,
     AbstractWalletController,
@@ -33,13 +30,10 @@ import {
     YlideKeyPair,
     GenericEntry,
     BlockchainSource,
-    BrowserLocalStorage,
 } from "@ylide/sdk";
 import moment from "moment";
 
 Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.LOCAL_HARDHAT]);
-Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.ETHEREUM]);
-Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.BNBCHAIN]);
 Ylide.registerBlockchainFactory(everscaleBlockchainFactory);
 Ylide.registerWalletFactory(ethereumWalletFactory);
 Ylide.registerWalletFactory(everscaleWalletFactory);
