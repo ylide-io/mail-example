@@ -1,16 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+    CSSProperties,
+    useCallback,
+    useEffect,
+    useMemo,
+    useState,
+} from "react";
 import "./App.css";
 import {
-    EverscaleBlockchainController,
     everscaleBlockchainFactory,
-    EverscaleWalletController,
     everscaleWalletFactory,
 } from "@ylide/everscale";
 import {
     EthereumBlockchainController,
-    ethereumBlockchainFactory,
+    evmFactories,
     EthereumWalletController,
     ethereumWalletFactory,
+    EVMNetwork,
+    EVM_NAMES,
 } from "@ylide/ethereum";
 import {
     Ylide,
@@ -21,19 +27,45 @@ import {
     BrowserIframeStorage,
     MessagesList,
     BlockchainSourceSubjectType,
+    AbstractWalletController,
+    AbstractBlockchainController,
+    WalletControllerFactory,
+    YlideKeyPair,
+    GenericEntry,
+    BlockchainSource,
+    BrowserLocalStorage,
 } from "@ylide/sdk";
-import Web3 from "web3";
 import moment from "moment";
 
-Ylide.registerBlockchainFactory(ethereumBlockchainFactory);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.LOCAL_HARDHAT]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.ETHEREUM]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.BNBCHAIN]);
 Ylide.registerBlockchainFactory(everscaleBlockchainFactory);
 Ylide.registerWalletFactory(ethereumWalletFactory);
 Ylide.registerWalletFactory(everscaleWalletFactory);
 
+const useListHandler = () => {
+    const [messages, setMessages] = useState<
+        GenericEntry<IMessage, BlockchainSource>[]
+    >([]);
+    const list = useMemo(() => new MessagesList(), []);
+
+    useEffect(() => {
+        const handler = () => setMessages([...list.getWindow()]);
+        list.on("windowUpdate", handler);
+        return () => {
+            list.off("windowUpdate", handler);
+        };
+    }, [list]);
+
+    return { messages, list };
+};
+
 export function App() {
-    const inboxMessagesList = useMemo(() => new MessagesList(), []);
-    const sentMessagesList = useMemo(() => new MessagesList(), []);
-    const storage = useMemo(() => new BrowserIframeStorage(), []);
+    const { messages: inboxMessages, list: inbox } = useListHandler();
+    const { messages: sentMessages, list: sent } = useListHandler();
+
+    const storage = useMemo(() => new BrowserLocalStorage(), []);
     const keystore = useMemo(
         () =>
             new YlideKeyStore(storage, {
@@ -43,47 +75,160 @@ export function App() {
         [storage]
     );
 
-    const [isWalletAvailable, setIsWalletAvailable] = useState(false);
     const [ylide, setYlide] = useState<Ylide | null>(null);
-    const [sender, setSender] = useState<EthereumWalletController | null>(null);
-    const [reader, setReader] = useState<EthereumBlockchainController | null>(
-        null
+    const [walletsList, setWalletsList] = useState<
+        { factory: WalletControllerFactory; isAvailable: boolean }[]
+    >([]);
+    const [accounts, setAccounts] = useState<
+        { wallet: string; address: string }[]
+    >(
+        localStorage.getItem("accs")
+            ? JSON.parse(localStorage.getItem("accs")!)
+            : []
     );
-    const [account, setAccount] = useState<IGenericAccount | null>(null);
-    const [keys, setKeys] = useState<YlideKeyStore["keys"]>([]);
-    const [isKeyRegistered, setIsKeyRegistered] = useState(false);
-    const [inboxMessages, setInboxMessages] = useState<IMessage[]>([]);
-    const [sentMessages, setSentMessages] = useState<IMessage[]>([]);
+    useEffect(() => {
+        localStorage.setItem("accs", JSON.stringify(accounts));
+    }, [accounts]);
+    const [accountsState, setAccountsState] = useState<
+        Record<
+            string,
+            {
+                localKey: YlideKeyPair | null;
+                remoteKey: Uint8Array | null;
+                wallet: {
+                    wallet: AbstractWalletController;
+                    factory: WalletControllerFactory;
+                } | null;
+            }
+        >
+    >({});
+    const [wallets, setWallets] = useState<
+        { wallet: AbstractWalletController; factory: WalletControllerFactory }[]
+    >([]);
+    const [readers, setReaders] = useState<AbstractBlockchainController[]>([]);
 
+    // const [sender, setSender] = useState<EthereumWalletController | null>(null);
+    // const [reader, setReader] = useState<EthereumBlockchainController | null>(
+    //     null
+    // );
+    const [keys, setKeys] = useState<YlideKeyStore["keys"]>([]);
+
+    const [from, setFrom] = useState<string | null>(null);
     const [recipient, setRecipient] = useState("");
     const [subject, setSubject] = useState("");
     const [text, setText] = useState("");
 
+    useEffect(() => {
+        if (!ylide) {
+            return;
+        }
+        (async () => {
+            const availableWallets = await Ylide.getAvailableWallets();
+            setWallets(
+                await Promise.all(
+                    availableWallets.map(async (w) => {
+                        return {
+                            factory: w,
+                            wallet: await ylide.addWallet(
+                                w.blockchainGroup,
+                                w.wallet,
+                                {
+                                    dev: true,
+                                    onNetworkSwitchRequest: async (
+                                        reason: string,
+                                        currentNetwork: EVMNetwork | undefined,
+                                        needNetwork: EVMNetwork,
+                                        needChainId: number
+                                    ) => {
+                                        alert(
+                                            "Wrong network (" +
+                                                (currentNetwork
+                                                    ? EVM_NAMES[currentNetwork]
+                                                    : "undefined") +
+                                                "), switch to " +
+                                                EVM_NAMES[needNetwork]
+                                        );
+                                    },
+                                }
+                            ),
+                        };
+                    })
+                )
+            );
+            // console.log("seeeet");
+        })();
+    }, [ylide]);
+
+    useEffect(() => {
+        if (!wallets.length) {
+            return;
+        }
+        (async () => {
+            const result: Record<
+                string,
+                {
+                    wallet: {
+                        wallet: AbstractWalletController;
+                        factory: WalletControllerFactory;
+                    } | null;
+                    localKey: YlideKeyPair | null;
+                    remoteKey: Uint8Array | null;
+                }
+            > = {};
+            for (let acc of accounts) {
+                const wallet = wallets.find(
+                    (w) => w.factory.wallet === acc.wallet
+                );
+                result[acc.address] = {
+                    wallet: wallet || null,
+                    localKey:
+                        keys.find((k) => k.address === acc.address)?.key ||
+                        null,
+                    remoteKey:
+                        (
+                            await Promise.all(
+                                readers.map(async (r) => {
+                                    if (!r.isAddressValid(acc.address)) {
+                                        return null;
+                                    }
+                                    const c =
+                                        await r.extractPublicKeyFromAddress(
+                                            acc.address
+                                        );
+                                    if (c) {
+                                        return c.bytes;
+                                    } else {
+                                        return null;
+                                    }
+                                })
+                            )
+                        ).find((t) => !!t) || null,
+                };
+            }
+            setAccountsState(result);
+        })();
+    }, [accounts, keys, readers, wallets]);
+
+    useEffect(() => {
+        (async () => {
+            const list = Ylide.walletsList;
+            const result: {
+                factory: WalletControllerFactory;
+                isAvailable: boolean;
+            }[] = [];
+            for (const { factory } of list) {
+                result.push({
+                    factory,
+                    isAvailable: await factory.isWalletAvailable(),
+                });
+            }
+            setWalletsList(result);
+        })();
+    }, []);
+
     const handlePasswordRequest = useCallback(async (reason: string) => {
         return prompt(`Enter Ylide password for ${reason}`);
     }, []);
-
-    useEffect(() => {
-        const handler = () => {
-            console.log("window update");
-            setInboxMessages(inboxMessagesList.getWindow().map((w) => w.link));
-        };
-        inboxMessagesList.on("windowUpdate", handler);
-        return () => {
-            inboxMessagesList.off("windowUpdate", handler);
-        };
-    }, [inboxMessagesList]);
-
-    useEffect(() => {
-        const handler = () => {
-            console.log("window update");
-            setSentMessages(sentMessagesList.getWindow().map((w) => w.link));
-        };
-        sentMessagesList.on("windowUpdate", handler);
-        return () => {
-            sentMessagesList.off("windowUpdate", handler);
-        };
-    }, [sentMessagesList]);
 
     const handleDeriveRequest = useCallback(
         async (
@@ -93,16 +238,17 @@ export function App() {
             address: string,
             magicString: string
         ) => {
-            if (!sender) {
+            const state = accountsState[address];
+            if (!state) {
                 return null;
             }
             try {
-                return sender.signMagicString(magicString);
+                return state.wallet!.wallet.signMagicString(magicString);
             } catch (err) {
                 return null;
             }
         },
-        [sender]
+        [accountsState]
     );
 
     useEffect(() => {
@@ -112,191 +258,409 @@ export function App() {
 
     useEffect(() => {
         (async () => {
-            const isAvailable = await ethereumWalletFactory.isWalletAvailable();
-            setIsWalletAvailable(isAvailable);
-        })();
-    }, []);
-
-    useEffect(() => {
-        if (!isWalletAvailable) {
-            return;
-        }
-        (async () => {
             await keystore.init();
 
             const _ylide = new Ylide(keystore);
-            const { blockchainController, walletController } =
-                await _ylide.addWallet("ethereum", "web3", {
+            const _readers = [
+                await _ylide.addBlockchain("everscale", {
                     dev: true,
-                    readWeb3Provider: new Web3.providers.HttpProvider(
-                        "http://localhost:8545/"
-                    ),
-                });
-            const rr = await _ylide.addBlockchain("everscale", { dev: true });
-            const _account = await walletController.getAuthenticatedAccount();
+                }),
+                await _ylide.addBlockchain("LOCAL_HARDHAT"),
+            ];
 
-            if (_account) {
-                inboxMessagesList.addReader(blockchainController, undefined, {
-                    type: BlockchainSourceSubjectType.RECIPIENT,
-                    address: blockchainController.addressToUint256(
-                        _account.address
-                    ),
-                });
-                inboxMessagesList.addReader(rr, undefined, {
-                    type: BlockchainSourceSubjectType.RECIPIENT,
-                    address: blockchainController.addressToUint256(
-                        _account.address
-                    ),
-                });
-                sentMessagesList.addReader(blockchainController, undefined, {
-                    type: BlockchainSourceSubjectType.RECIPIENT,
-                    address: Ylide.getSentAddress(
-                        blockchainController.addressToUint256(_account.address)
-                    ),
-                });
-                sentMessagesList.addReader(rr, undefined, {
-                    type: BlockchainSourceSubjectType.RECIPIENT,
-                    address: Ylide.getSentAddress(
-                        blockchainController.addressToUint256(_account.address)
-                    ),
-                });
+            // const blockchainController = await _ylide.addBlockchain(
+            //     "everscale", // "LOCAL_HARDHAT"
+            //     {
+            //         dev: true,
+            //     }
+            // );
+            // const walletController = await _ylide.addWallet(
+            //     "everscale",
+            //     "everwallet",
+            //     {
+            //         // "evm", "web3", {
+            //         dev: true,
+            //         onNetworkSwitchRequest: async (
+            //             reason: string,
+            //             currentNetwork: EVMNetwork | undefined,
+            //             needNetwork: EVMNetwork,
+            //             needChainId: number
+            //         ) => {
+            //             alert(
+            //                 "Wrong network (" +
+            //                     (currentNetwork
+            //                         ? EVM_NAMES[currentNetwork]
+            //                         : "undefined") +
+            //                     "), switch to " +
+            //                     EVM_NAMES[needNetwork]
+            //             );
+            //         },
+            //     }
+            // );
 
-                inboxMessagesList.readFirstPage();
-                sentMessagesList.readFirstPage();
-            }
+            // const rr = await _ylide.addBlockchain("LOCAL_HARDHAT", {
+            //     dev: true,
+            // });
+            // const _account = await walletController.getAuthenticatedAccount();
 
             setYlide(_ylide);
-            setReader(blockchainController as EthereumBlockchainController);
-            setSender(walletController as EthereumWalletController);
-            setAccount(_account);
+            setReaders(_readers);
+            // setReader(blockchainController as EthereumBlockchainController);
+            // setSender(walletController as EthereumWalletController);
+            // setAccount(_account);
             setKeys([...keystore.keys]);
         })();
-    }, [isWalletAvailable, keystore, inboxMessagesList, sentMessagesList]);
+    }, [inbox, keystore, sent]);
+
+    // useEffect(() => {
+    //     inbox.on("messages", ({ messages }) => {
+    //         console.log("got inbox messages: ", messages);
+    //     });
+    // }, [inbox]);
+
+    // useEffect(() => {
+    //     (async () => {
+    //         for (const reader of readers) {
+    //             for (const account of accounts) {
+    //                 const state = accountsState[account.address];
+    //                 if (state && state.wallet) {
+    //                     const msgs =
+    //                         await reader.retrieveMessageHistoryByBounds(
+    //                             state.wallet!.wallet.addressToUint256(
+    //                                 account.address
+    //                             )
+    //                         );
+    //                     const sentMsgs =
+    //                         await reader.retrieveMessageHistoryByBounds(
+    //                             Ylide.getSentAddress(
+    //                                 state.wallet!.wallet.addressToUint256(
+    //                                     account.address
+    //                                 )
+    //                             )
+    //                         );
+    //                     console.log(
+    //                         `${account.address} in ${reader.constructor.name}: `,
+    //                         msgs
+    //                     );
+    //                     // console.log(
+    //                     //     `Sent from ${account.address} in ${reader.constructor.name}: `,
+    //                     //     sentMsgs
+    //                     // );
+    //                 }
+    //             }
+    //         }
+    //     })();
+    // }, [accounts, accountsState, readers, sent]);
 
     useEffect(() => {
-        if (!sender || !account || keys.length === 0) {
-            return;
-        }
-        (async () => {
-            const key = keys[0].key;
-            const pk =
-                await sender.blockchainController.extractPublicKeyFromAddress(
-                    account.address
-                );
-            if (!pk) {
-                setIsKeyRegistered(false);
-            } else {
-                if (
-                    pk.bytes.length === key.publicKey.length &&
-                    pk.bytes.every((e, idx) => e === key.publicKey[idx])
-                ) {
-                    setIsKeyRegistered(true);
+        for (const reader of readers) {
+            for (const account of accounts) {
+                const state = accountsState[account.address];
+                if (state && state.wallet) {
+                    // console.log(
+                    //     "add: ",
+                    //     reader.constructor.name,
+                    //     account.address
+                    // );
+
+                    inbox.addReader(reader, {
+                        address: state.wallet.wallet.addressToUint256(
+                            account.address
+                        ),
+                        type: BlockchainSourceSubjectType.RECIPIENT,
+                    });
+                    sent.addReader(reader, {
+                        type: BlockchainSourceSubjectType.RECIPIENT,
+                        address: Ylide.getSentAddress(
+                            state.wallet.wallet.addressToUint256(
+                                account.address
+                            )
+                        ),
+                    });
                 } else {
-                    setIsKeyRegistered(false);
+                    console.log("not found: ", account.address);
                 }
             }
-        })();
-    }, [account, keys, sender]);
+        }
 
-    const connectAccount = useCallback(async () => {
-        if (!sender) {
+        inbox.readFirstPage();
+        sent.readFirstPage();
+
+        return () => {
+            for (const reader of readers) {
+                for (const account of accounts) {
+                    const state = accountsState[account.address];
+                    if (state && state.wallet) {
+                        // console.log(
+                        //     "remove: ",
+                        //     reader.constructor.name,
+                        //     account.address
+                        // );
+                        inbox.removeReader(reader, {
+                            address: state.wallet.wallet.addressToUint256(
+                                account.address
+                            ),
+                            type: BlockchainSourceSubjectType.RECIPIENT,
+                        });
+                        sent.removeReader(reader, {
+                            type: BlockchainSourceSubjectType.RECIPIENT,
+                            address: Ylide.getSentAddress(
+                                state.wallet.wallet.addressToUint256(
+                                    account.address
+                                )
+                            ),
+                        });
+                    }
+                }
+            }
+        };
+    }, [accounts, accountsState, inbox, readers, sent]);
+
+    // useEffect(() => {
+    //     (async () => {
+    //         const isAvailable =
+    //             await everscaleWalletFactory.isWalletAvailable();
+    //         setIsWalletAvailable(isAvailable);
+    //     })();
+    // }, []);
+
+    // useEffect(() => {
+    //     if (!reader || !account || keys.length === 0) {
+    //         return;
+    //     }
+    //     (async () => {
+    //         const key = keys[0].key;
+    //         const pk = await reader.extractPublicKeyFromAddress(
+    //             account.address
+    //         );
+    //         if (!pk) {
+    //             setIsKeyRegistered(false);
+    //         } else {
+    //             if (
+    //                 pk.bytes.length === key.publicKey.length &&
+    //                 pk.bytes.every((e, idx) => e === key.publicKey[idx])
+    //             ) {
+    //                 setIsKeyRegistered(true);
+    //             } else {
+    //                 setIsKeyRegistered(false);
+    //             }
+    //         }
+    //     })();
+    // }, [account, keys, reader]);
+
+    // const connectAccount = useCallback(async () => {
+    //     if (!sender) {
+    //         return;
+    //     }
+    //     setAccount(await sender.requestAuthentication());
+    // }, [sender]);
+
+    // const disconnectAccount = useCallback(async () => {
+    //     if (!sender) {
+    //         return;
+    //     }
+    //     await sender.disconnectAccount();
+    //     setAccount(null);
+    // }, [sender]);
+
+    // const createKey = useCallback(async () => {
+    //     if (!account) {
+    //         return;
+    //     }
+    //     const passwordForKey = prompt(`Enter password for creating first key`);
+    //     if (!passwordForKey) {
+    //         return;
+    //     }
+    //     const key = await keystore.create(
+    //         "For your first key",
+    //         "evm",
+    //         "web3",
+    //         account.address,
+    //         passwordForKey
+    //     );
+    //     await key.storeUnencrypted(passwordForKey);
+    //     await keystore.save();
+    //     setKeys([...keystore.keys]);
+    // }, [account, keystore]);
+
+    // const deleteKeys = useCallback(async () => {
+    //     for (const key of keystore.keys) {
+    //         await keystore.delete(key);
+    //     }
+    //     setKeys([...keystore.keys]);
+    // }, [keystore]);
+
+    // const registerPublicKey = useCallback(async () => {
+    //     if (!keys.length || !sender) {
+    //         return;
+    //     }
+    //     const key = keys[0].key;
+    //     await sender.attachPublicKey(key.publicKey, {
+    //         network: EVMNetwork.LOCAL_HARDHAT,
+    //     });
+    // }, [keys, sender]);
+
+    const send = useCallback(async () => {
+        if (!ylide) {
             return;
         }
-        setAccount(await sender.requestAuthentication());
-    }, [sender]);
-
-    const disconnectAccount = useCallback(async () => {
-        if (!sender) {
+        const fromAccount = accounts.find((a) => a.address === from);
+        if (!fromAccount) {
             return;
         }
-        await sender.disconnectAccount();
-        setAccount(null);
-    }, [sender]);
-
-    const createKey = useCallback(async () => {
-        if (!account) {
-            return;
-        }
-        const passwordForKey = prompt(`Enter password for creating first key`);
-        if (!passwordForKey) {
-            return;
-        }
-        const key = await keystore.create(
-            "For your first key",
-            "ethereum",
-            "web3",
-            account.address,
-            passwordForKey
-        );
-        await key.storeUnencrypted(passwordForKey);
-        await keystore.save();
-        setKeys([...keystore.keys]);
-    }, [account, keystore]);
-
-    const deleteKeys = useCallback(async () => {
-        for (const key of keystore.keys) {
-            await keystore.delete(key);
-        }
-        setKeys([...keystore.keys]);
-    }, [keystore]);
-
-    const registerPublicKey = useCallback(async () => {
-        if (!keys.length || !sender) {
-            return;
-        }
-        const key = keys[0].key;
-        await sender.attachPublicKey(key.publicKey);
-    }, [keys, sender]);
-
-    const writeMessage = useCallback(async () => {
-        if (!keys.length || !account || !reader || !sender || !ylide) {
+        const state = accountsState[fromAccount.address];
+        if (!state) {
             return;
         }
         const content = MessageContentV3.plain(subject, text);
-        const msgId = await ylide.sendMessage({
-            wallet: sender,
-            sender: account,
-            content,
-            recipients: [recipient],
-        });
+        const msgId = await ylide.sendMessage(
+            {
+                wallet: state.wallet!.wallet,
+                sender: (await state.wallet!.wallet.getAuthenticatedAccount())!,
+                content,
+                recipients: [recipient],
+            },
+            { network: EVMNetwork.LOCAL_HARDHAT }
+        );
         alert(`Sent ${msgId}`);
-    }, [account, keys.length, reader, recipient, sender, subject, text, ylide]);
+    }, [accounts, accountsState, from, recipient, subject, text, ylide]);
 
-    const readMessages = useCallback(async () => {
-        if (!reader || !sender || !account) {
-            return;
-        }
-        console.log("reader: ", reader);
-        // const msgs = await reader.retrieveMessageHistoryByDates(
-        //     sender.blockchainController.addressToUint256(account.address)
-        // );
-        // setInboxMessages(msgs);
-        // setInboxMessages(msgs);
-    }, [sender, reader, account]);
+    const row: CSSProperties = {
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "stretch",
+        flexGrow: 1,
+        flexBasis: 0,
+    };
+    const plate: CSSProperties = {
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        flexGrow: 1,
+        flexBasis: 0,
+        padding: 10,
+        border: "1px solid #e0e0e0",
+    };
+    const header: CSSProperties = {
+        flexGrow: 0,
+        flexShrink: 0,
+        marginTop: 0,
+        fontSize: 24,
+        marginBottom: 0,
+    };
+    const container: CSSProperties = {
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        justifyContent: "flex-start",
+        overflowY: "auto",
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 0,
+    };
+    const containerRow: CSSProperties = {
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "flex-start",
+        flexGrow: 0,
+        flexShrink: 0,
+        flexBasis: 40,
+        borderBottom: "1px solid #f0f0f0",
+    };
 
-    const readSentMessages = useCallback(async () => {
-        if (!reader || !account) {
-            return;
-        }
-        // const msgs = await reader.retrieveMessageHistoryByDates(
-        //     reader.addressToUint256(
-        //         reader.uint256ToAddress(sha256(account.address))
-        //     )
-        // );
-        // setInboxMessages(msgs);
-        // setInboxMessages(msgs);
-    }, [reader, account]);
-
-    const decryptMessage = useCallback(
-        async (m: IMessage) => {
-            if (!reader || !keys.length || !account || !ylide) {
+    const generateKey = useCallback(
+        async (wallet: string, address: string) => {
+            const account = accountsState[address];
+            const password = await keystore.options.onPasswordRequest(
+                `Generation key for ${address}`
+            );
+            if (!password) {
                 return;
             }
-            const { blockchain } = await ylide.getMessageControllers(
-                m,
-                reader.addressToUint256(account.address)
+            await keystore.create(
+                `Generation key for ${address}`,
+                account.wallet!.factory.blockchainGroup,
+                wallet,
+                address,
+                password
             );
-            const content = await blockchain.retrieveAndVerifyMessageContent(m);
+            document.location.reload();
+        },
+        [keystore, accountsState]
+    );
+
+    const publishKey = useCallback(
+        async (wallet: string, address: string, key: Uint8Array) => {
+            const account = accountsState[address];
+            account.wallet!.wallet.attachPublicKey(key, {
+                address,
+                network: EVMNetwork.LOCAL_HARDHAT,
+            });
+        },
+        [accountsState]
+    );
+
+    const addAccount = useCallback(
+        async (factory: WalletControllerFactory) => {
+            const tempWallet = await factory.create({
+                onNetworkSwitchRequest: () => {},
+            });
+            const newAcc = await tempWallet.requestAuthentication();
+            if (!newAcc) {
+                alert("Auth was rejected");
+                return;
+            }
+            const exists = accounts.some((a) => a.address === newAcc.address);
+            if (exists) {
+                alert("Already registered");
+                return;
+            }
+            setAccounts(
+                accounts.concat([
+                    {
+                        wallet: factory.wallet,
+                        address: newAcc.address,
+                    },
+                ])
+            );
+        },
+        [accounts]
+    );
+
+    const decryptMessage = useCallback(
+        async (m: GenericEntry<IMessage, BlockchainSource>) => {
+            if (!ylide) {
+                return;
+            }
+            const reader = m.source.reader;
+            const acc = accounts
+                .map((account) => {
+                    const accountUint256Address = accountsState[
+                        account.address
+                    ].wallet!.wallet.addressToUint256(account.address);
+                    const sentAddress = Ylide.getSentAddress(
+                        accountUint256Address
+                    );
+
+                    if (
+                        accountUint256Address === m.link.recipientAddress ||
+                        sentAddress === m.link.recipientAddress
+                    ) {
+                        return {
+                            account,
+                        };
+                    }
+                    return null;
+                })
+                .find((t) => !!t);
+            console.log("acc: ", acc);
+            if (!acc) {
+                return;
+            }
+            const content = await reader.retrieveAndVerifyMessageContent(
+                m.link
+            );
             if (!content) {
                 return alert("Content not found");
             }
@@ -304,147 +668,564 @@ export function App() {
                 return alert("Content is corrupted");
             }
             const decodedContent = await ylide.decryptMessageContent(
-                m,
+                m.link,
                 content,
-                account.address
+                acc.account.address
             );
             alert(decodedContent.subject + "\n\n" + decodedContent.content);
         },
-        [keys, reader, account, ylide]
+        [ylide, accounts, accountsState]
     );
 
     return (
-        <div>
-            {isWalletAvailable ? (
-                <div>Wallet is available in the browser</div>
-            ) : (
-                <div>Wallet is not available in the browser</div>
-            )}
-            {account ? (
-                <div>
-                    Account connected: {account.address}
-                    <button onClick={disconnectAccount}>
-                        Disconnect account
-                    </button>
-                </div>
-            ) : (
-                <div>
-                    No account connected.
-                    <button onClick={connectAccount}>Connect account</button>
-                </div>
-            )}
-            {keys.length ? (
-                <div>
-                    Keys: {keys.length}
-                    <button onClick={deleteKeys}>Delete keys</button>
-                </div>
-            ) : (
-                <div>
-                    No keys created
-                    <button onClick={createKey}>Create key</button>
-                </div>
-            )}
-            {isKeyRegistered ? (
-                <div>Your key is registered in blockchain</div>
-            ) : (
-                <div>
-                    Your key is not registered in blockchain
-                    <button onClick={registerPublicKey}>Register key</button>
-                </div>
-            )}
-            {account && keys.length && isKeyRegistered ? (
-                <div>
-                    <input
-                        type="text"
-                        placeholder="Recipient"
-                        id="recipient"
-                        value={recipient}
-                        onChange={(e) => setRecipient(e.target.value)}
-                    />
-                    <input
-                        type="text"
-                        placeholder="Subject"
-                        id="subject"
-                        value={subject}
-                        onChange={(e) => setSubject(e.target.value)}
-                    />
-                    <textarea
-                        placeholder="Text"
-                        id="text"
-                        value={text}
-                        onChange={(e) => setText(e.target.value)}
-                    />
-                    <button onClick={writeMessage}>Send</button>
-                </div>
-            ) : null}
-            {account && keys.length && isKeyRegistered ? (
+        <div
+            style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "stretch",
+                width: "100vw",
+                height: "100vh",
+            }}
+        >
+            <div style={Object.assign({}, row, { flexGrow: 1 })}>
                 <div
-                    style={{
-                        display: "flex",
-                        flexDirection: "row",
-                        marginTop: 20,
-                    }}
+                    style={Object.assign(
+                        { background: "rgba(255, 0, 0, 0.1) " },
+                        plate
+                    )}
                 >
-                    <div
-                        style={{
-                            flexGrow: 1,
-                            flexBasis: 0,
-                            display: "flex",
-                            flexDirection: "column",
-                        }}
-                    >
-                        <h3>Inbox:</h3>
-                        {inboxMessages.map((m) => (
-                            <div>
-                                Msg: {m.msgId.substring(0, 10)}... , Sender:{" "}
-                                {m.senderAddress.substring(0, 10)}..., Date:{" "}
-                                {moment(new Date(m.createdAt * 1000)).format(
-                                    "HH:mm:ss DD.MM.YYYY"
-                                )}
-                                <a
-                                    href="_none"
-                                    onClick={(e) => {
-                                        e.preventDefault();
-                                        decryptMessage(m);
-                                    }}
-                                >
-                                    Decrypt
-                                </a>
-                            </div>
-                        ))}
-                    </div>
-                    <div
-                        style={{
-                            flexGrow: 1,
-                            flexBasis: 0,
-                            display: "flex",
-                            flexDirection: "column",
-                        }}
-                    >
-                        <h3>Sent:</h3>
-                        {sentMessages.map((m) => (
-                            <div>
-                                Msg: {m.msgId.substring(0, 10)}... , Sender:{" "}
-                                {m.senderAddress.substring(0, 10)}..., Date:{" "}
-                                {moment(new Date(m.createdAt * 1000)).format(
-                                    "HH:mm:ss DD.MM.YYYY"
-                                )}
-                                <a
-                                    href="_none"
-                                    onClick={(e) => {
-                                        e.preventDefault();
-                                        decryptMessage(m);
-                                    }}
-                                >
-                                    Decrypt
-                                </a>
-                            </div>
-                        ))}
+                    <div style={container}>
+                        <h4
+                            style={Object.assign({}, header, {
+                                fontSize: 20,
+                                marginBottom: 10,
+                            })}
+                        >
+                            Wallets
+                        </h4>
+                        <table className="tiny-table">
+                            <thead>
+                                <tr>
+                                    <th>Wallet</th>
+                                    <th>Group</th>
+                                    <th>Connect</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {walletsList.map(({ factory, isAvailable }) => (
+                                    <tr key={factory.blockchainGroup}>
+                                        <td>{factory.wallet}</td>
+                                        <td>{factory.blockchainGroup}</td>
+                                        <td>
+                                            {isAvailable ? (
+                                                <button
+                                                    onClick={() =>
+                                                        addAccount(factory)
+                                                    }
+                                                >
+                                                    Add account
+                                                </button>
+                                            ) : (
+                                                "Not available"
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        <h4
+                            style={Object.assign({}, header, {
+                                fontSize: 20,
+                                marginBottom: 10,
+                                marginTop: 20,
+                            })}
+                        >
+                            Accounts
+                        </h4>
+                        <table className="tiny-table">
+                            <thead>
+                                <tr>
+                                    <th>Wallet</th>
+                                    <th>Address</th>
+                                    <th>Status</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {accounts.map(({ wallet, address }, idx) => {
+                                    const state = accountsState[address];
+                                    return (
+                                        <tr key={idx}>
+                                            <td>{wallet}</td>
+                                            <td>
+                                                <a
+                                                    href="_blank"
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        navigator.clipboard.writeText(
+                                                            address
+                                                        );
+                                                    }}
+                                                >
+                                                    {address.substring(0, 6) +
+                                                        "..." +
+                                                        address.substring(
+                                                            address.length - 6
+                                                        )}
+                                                </a>
+                                            </td>
+                                            <td>
+                                                {state
+                                                    ? state.localKey
+                                                        ? state.remoteKey
+                                                            ? state.remoteKey.every(
+                                                                  (e, i) =>
+                                                                      state.localKey!
+                                                                          .publicKey[
+                                                                          i
+                                                                      ] === e
+                                                              )
+                                                                ? "Key is registered"
+                                                                : "Local key does not match remote"
+                                                            : "Key is not registered"
+                                                        : "Key is not available"
+                                                    : "No state"}
+                                            </td>
+                                            <td>
+                                                {state ? (
+                                                    state.localKey ? (
+                                                        state.remoteKey ? (
+                                                            state.remoteKey.every(
+                                                                (e, i) =>
+                                                                    state.localKey!
+                                                                        .publicKey[
+                                                                        i
+                                                                    ] === e
+                                                            ) ? null : (
+                                                                <button
+                                                                    onClick={() =>
+                                                                        publishKey(
+                                                                            wallet,
+                                                                            address,
+                                                                            state.localKey!
+                                                                                .publicKey
+                                                                        )
+                                                                    }
+                                                                >
+                                                                    Replace key
+                                                                </button>
+                                                            )
+                                                        ) : (
+                                                            <button
+                                                                onClick={() =>
+                                                                    publishKey(
+                                                                        wallet,
+                                                                        address,
+                                                                        state.localKey!
+                                                                            .publicKey
+                                                                    )
+                                                                }
+                                                            >
+                                                                Register
+                                                            </button>
+                                                        )
+                                                    ) : (
+                                                        <button
+                                                            onClick={() =>
+                                                                generateKey(
+                                                                    wallet,
+                                                                    address
+                                                                )
+                                                            }
+                                                        >
+                                                            Generate
+                                                        </button>
+                                                    )
+                                                ) : (
+                                                    "No state"
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
-            ) : null}
+                <div
+                    style={Object.assign(
+                        { background: "rgba(0, 255, 0, 0.1) " },
+                        plate
+                    )}
+                >
+                    <h3 style={header}>Send message</h3>
+                    <div style={container}>
+                        <div style={containerRow}>
+                            <div style={{ flexGrow: 0, flexBasis: 100 }}>
+                                From:{" "}
+                            </div>
+                            <div
+                                style={{
+                                    flexGrow: 1,
+                                    display: "flex",
+                                    flexDirection: "row",
+                                    alignItems: "center",
+                                    justifyContent: "flex-start",
+                                }}
+                            >
+                                <select
+                                    value={from || undefined}
+                                    style={{ flexGrow: 1, flexShrink: 1 }}
+                                    onChange={(e) =>
+                                        setFrom(
+                                            accounts.find(
+                                                (a) =>
+                                                    a.address === e.target.value
+                                            )?.address || null
+                                        )
+                                    }
+                                >
+                                    {accounts.map((acc) => (
+                                        <option
+                                            value={acc.address}
+                                            key={acc.address}
+                                        >
+                                            [{acc.wallet}] {acc.address}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+                        <div style={containerRow}>
+                            <div style={{ flexGrow: 0, flexBasis: 100 }}>
+                                To:{" "}
+                            </div>
+                            <div
+                                style={{
+                                    flexGrow: 1,
+                                    display: "flex",
+                                    flexDirection: "row",
+                                    alignItems: "center",
+                                    justifyContent: "flex-start",
+                                }}
+                            >
+                                <input
+                                    value={recipient}
+                                    onChange={(e) =>
+                                        setRecipient(e.target.value)
+                                    }
+                                    style={{ flexGrow: 1, flexShrink: 1 }}
+                                    placeholder="Address..."
+                                />
+                            </div>
+                        </div>
+                        <div style={containerRow}>
+                            <div style={{ flexGrow: 0, flexBasis: 100 }}>
+                                Subject:{" "}
+                            </div>
+                            <div
+                                style={{
+                                    flexGrow: 1,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "flex-start",
+                                }}
+                            >
+                                <input
+                                    value={subject}
+                                    onChange={(e) => setSubject(e.target.value)}
+                                    style={{ flexGrow: 1, flexShrink: 1 }}
+                                    placeholder="Subject..."
+                                />
+                            </div>
+                        </div>
+                        <div
+                            style={{
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "stretch",
+                                justifyContent: "flex-start",
+                                paddingTop: 5,
+                                flexGrow: 1,
+                            }}
+                        >
+                            <div style={{ flexGrow: 0, marginBottom: 10 }}>
+                                Text:{" "}
+                            </div>
+                            <div
+                                style={{
+                                    flexGrow: 1,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "stretch",
+                                }}
+                            >
+                                <textarea
+                                    value={text}
+                                    onChange={(e) => setText(e.target.value)}
+                                    style={{ flexGrow: 1 }}
+                                    placeholder="Content..."
+                                />
+                            </div>
+                        </div>
+                        <div
+                            style={Object.assign({}, containerRow, {
+                                alignItems: "center",
+                                justifyContent: "center",
+                            })}
+                        >
+                            <button
+                                onClick={() => send()}
+                                style={{ width: 120, height: 30 }}
+                            >
+                                Send
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div style={row}>
+                <div
+                    style={Object.assign(
+                        { background: "rgba(0, 0, 255, 0.1) " },
+                        plate
+                    )}
+                >
+                    <h3 style={header}>Inbox</h3>
+                    <table className="tiny-table">
+                        <thead>
+                            <tr>
+                                <th>MsgID</th>
+                                <th>Blockchain</th>
+                                <th>Sender</th>
+                                <th>Recipient</th>
+                                <th>Date</th>
+                                <th>View</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {inboxMessages.map((m) => (
+                                <tr key={m.link.msgId}>
+                                    <td>{m.link.msgId.substring(0, 10)}...</td>
+                                    <td>{m.link.blockchain}</td>
+                                    <td>
+                                        {m.link.senderAddress.substring(0, 10)}
+                                        ...
+                                    </td>
+                                    <td>
+                                        {m.link.recipientAddress.substring(
+                                            0,
+                                            10
+                                        )}
+                                        ...
+                                    </td>
+                                    <td>
+                                        {moment(
+                                            new Date(m.link.createdAt * 1000)
+                                        ).format("HH:mm:ss DD.MM.YYYY")}
+                                    </td>
+                                    <td>
+                                        <button
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                decryptMessage(m);
+                                            }}
+                                        >
+                                            View
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+                <div
+                    style={Object.assign(
+                        { background: "rgba(255, 0, 255, 0.1) " },
+                        plate
+                    )}
+                >
+                    <h3 style={header}>Sent</h3>
+                    <table className="tiny-table">
+                        <thead>
+                            <tr>
+                                <th>MsgID</th>
+                                <th>Blockchain</th>
+                                <th>Sender</th>
+                                <th>Recipient</th>
+                                <th>Date</th>
+                                <th>View</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {sentMessages.map((m) => (
+                                <tr key={m.link.msgId}>
+                                    <td>{m.link.msgId.substring(0, 10)}...</td>
+                                    <td>{m.link.blockchain}</td>
+                                    <td>
+                                        {m.link.senderAddress.substring(0, 10)}
+                                        ...
+                                    </td>
+                                    <td>
+                                        {m.link.recipientAddress.substring(
+                                            0,
+                                            10
+                                        )}
+                                        ...
+                                    </td>
+                                    <td>
+                                        {moment(
+                                            new Date(m.link.createdAt * 1000)
+                                        ).format("HH:mm:ss DD.MM.YYYY")}
+                                    </td>
+                                    <td>
+                                        <button
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                decryptMessage(m);
+                                            }}
+                                        >
+                                            View
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     );
 }
+
+//     {isWalletAvailable ? (
+//     <div>Wallet is available in the browser</div>
+// ) : (
+//     <div>Wallet is not available in the browser</div>
+// )}
+// {account ? (
+//     <div>
+//         Account connected: {account.address}
+//         <button onClick={disconnectAccount}>
+//             Disconnect account
+//         </button>
+//     </div>
+// ) : (
+//     <div>
+//         No account connected.
+//         <button onClick={connectAccount}>Connect account</button>
+//     </div>
+// )}
+// {keys.length ? (
+//     <div>
+//         Keys: {keys.length}
+//         <button onClick={deleteKeys}>Delete keys</button>
+//     </div>
+// ) : (
+//     <div>
+//         No keys created
+//         <button onClick={createKey}>Create key</button>
+//     </div>
+// )}
+// {isKeyRegistered ? (
+//     <div>Your key is registered in blockchain</div>
+// ) : (
+//     <div>
+//         Your key is not registered in blockchain
+//         <button onClick={registerPublicKey}>Register key</button>
+//     </div>
+// )}
+// {account && keys.length && isKeyRegistered ? (
+//     <div>
+//         <input
+//             type="text"
+//             placeholder="Recipient"
+//             id="recipient"
+//             value={recipient}
+//             onChange={(e) => setRecipient(e.target.value)}
+//         />
+//         <input
+//             type="text"
+//             placeholder="Subject"
+//             id="subject"
+//             value={subject}
+//             onChange={(e) => setSubject(e.target.value)}
+//         />
+//         <textarea
+//             placeholder="Text"
+//             id="text"
+//             value={text}
+//             onChange={(e) => setText(e.target.value)}
+//         />
+//         <button onClick={writeMessage}>Send</button>
+//     </div>
+// ) : null}
+// {account && keys.length && isKeyRegistered ? (
+//     <div
+//         style={{
+//             display: "flex",
+//             flexDirection: "row",
+//             marginTop: 20,
+//         }}
+//     >
+//         <div
+//             style={{
+//                 flexGrow: 1,
+//                 flexBasis: 0,
+//                 display: "flex",
+//                 flexDirection: "column",
+//             }}
+//         >
+//             <h3>Inbox:</h3>
+//             {inboxMessages.map((m) => (
+//                 <div>
+//                     Msg: {m.msgId.substring(0, 10)}... , Sender:{" "}
+//                     {m.senderAddress.substring(0, 10)}..., Date:{" "}
+//                     {moment(new Date(m.createdAt * 1000)).format(
+//                         "HH:mm:ss DD.MM.YYYY"
+//                     )}
+//                     <a
+//                         href="_none"
+//                         onClick={(e) => {
+//                             e.preventDefault();
+//                             decryptMessage(m);
+//                         }}
+//                     >
+//                         Decrypt
+//                     </a>
+//                 </div>
+//             ))}
+//         </div>
+//         <div
+//             style={{
+//                 flexGrow: 1,
+//                 flexBasis: 0,
+//                 display: "flex",
+//                 flexDirection: "column",
+//             }}
+//         >
+//             <h3>Sent:</h3>
+//             {sentMessages.map((m) => (
+//                 <div>
+//                     Msg: {m.msgId.substring(0, 10)}... , Sender:{" "}
+//                     {m.senderAddress.substring(0, 10)}..., Date:{" "}
+//                     {moment(new Date(m.createdAt * 1000)).format(
+//                         "HH:mm:ss DD.MM.YYYY"
+//                     )}
+//                     <a
+//                         href="_none"
+//                         onClick={(e) => {
+//                             e.preventDefault();
+//                             decryptMessage(m);
+//                         }}
+//                     >
+//                         Decrypt
+//                     </a>
+//                 </div>
+//             ))}
+//         </div>
+//     </div>
+// ) : null}
+// </div>
 
 export default App;
