@@ -33,7 +33,12 @@ import {
 } from "@ylide/sdk";
 import moment from "moment";
 
-Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.LOCAL_HARDHAT]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.ETHEREUM]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.BNBCHAIN]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.POLYGON]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.ARBITRUM]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.OPTIMISM]);
+Ylide.registerBlockchainFactory(evmFactories[EVMNetwork.AVALANCHE]);
 Ylide.registerBlockchainFactory(everscaleBlockchainFactory);
 Ylide.registerWalletFactory(ethereumWalletFactory);
 Ylide.registerWalletFactory(everscaleWalletFactory);
@@ -43,12 +48,16 @@ const useListHandler = () => {
         GenericEntry<IMessage, BlockchainSource>[]
     >([]);
     const list = useMemo(() => new MessagesList(), []);
+    const [_, triggerRerender] = useState(0);
 
     useEffect(() => {
         const handler = () => setMessages([...list.getWindow()]);
+        const stateHandler = () => triggerRerender((v) => v + 1);
         list.on("windowUpdate", handler);
+        list.on("stateUpdate", stateHandler);
         return () => {
             list.off("windowUpdate", handler);
+            list.off("stateUpdate", stateHandler);
         };
     }, [list]);
 
@@ -57,6 +66,8 @@ const useListHandler = () => {
 
 export function App() {
     const { messages: inboxMessages, list: inbox } = useListHandler();
+    // @ts-ignore
+    window.inbox = inbox;
     const { messages: sentMessages, list: sent } = useListHandler();
 
     const storage = useMemo(() => new BrowserLocalStorage(), []);
@@ -127,7 +138,7 @@ export function App() {
                                 w.blockchainGroup,
                                 w.wallet,
                                 {
-                                    dev: true,
+                                    dev: false, //true,
                                     onNetworkSwitchRequest: async (
                                         reason: string,
                                         currentNetwork: EVMNetwork | undefined,
@@ -149,7 +160,6 @@ export function App() {
                     })
                 )
             );
-            // console.log("seeeet");
         })();
     }, [ylide]);
 
@@ -190,6 +200,10 @@ export function App() {
                                             acc.address
                                         );
                                     if (c) {
+                                        console.log(
+                                            `found public key for ${acc.address} in `,
+                                            r
+                                        );
                                         return c.bytes;
                                     } else {
                                         return null;
@@ -237,7 +251,10 @@ export function App() {
                 return null;
             }
             try {
-                return state.wallet!.wallet.signMagicString(magicString);
+                return state.wallet!.wallet.signMagicString(
+                    { address, blockchain, publicKey: null },
+                    magicString
+                );
             } catch (err) {
                 return null;
             }
@@ -257,122 +274,59 @@ export function App() {
             const _ylide = new Ylide(keystore);
             const _readers = [
                 await _ylide.addBlockchain("everscale", {
-                    dev: true,
+                    dev: false, //true,
                 }),
-                await _ylide.addBlockchain("LOCAL_HARDHAT"),
+                await _ylide.addBlockchain("ETHEREUM"),
+                await _ylide.addBlockchain("BNBCHAIN"),
+                await _ylide.addBlockchain("POLYGON"),
+                await _ylide.addBlockchain("ARBITRUM"),
+                await _ylide.addBlockchain("OPTIMISM"),
+                await _ylide.addBlockchain("AVALANCHE"),
             ];
-
-            // const blockchainController = await _ylide.addBlockchain(
-            //     "everscale", // "LOCAL_HARDHAT"
-            //     {
-            //         dev: true,
-            //     }
-            // );
-            // const walletController = await _ylide.addWallet(
-            //     "everscale",
-            //     "everwallet",
-            //     {
-            //         // "evm", "web3", {
-            //         dev: true,
-            //         onNetworkSwitchRequest: async (
-            //             reason: string,
-            //             currentNetwork: EVMNetwork | undefined,
-            //             needNetwork: EVMNetwork,
-            //             needChainId: number
-            //         ) => {
-            //             alert(
-            //                 "Wrong network (" +
-            //                     (currentNetwork
-            //                         ? EVM_NAMES[currentNetwork]
-            //                         : "undefined") +
-            //                     "), switch to " +
-            //                     EVM_NAMES[needNetwork]
-            //             );
-            //         },
-            //     }
-            // );
-
-            // const rr = await _ylide.addBlockchain("LOCAL_HARDHAT", {
-            //     dev: true,
-            // });
-            // const _account = await walletController.getAuthenticatedAccount();
 
             setYlide(_ylide);
             setReaders(_readers);
-            // setReader(blockchainController as EthereumBlockchainController);
-            // setSender(walletController as EthereumWalletController);
-            // setAccount(_account);
             setKeys([...keystore.keys]);
         })();
     }, [inbox, keystore, sent]);
-
-    // useEffect(() => {
-    //     inbox.on("messages", ({ messages }) => {
-    //         console.log("got inbox messages: ", messages);
-    //     });
-    // }, [inbox]);
-
-    // useEffect(() => {
-    //     (async () => {
-    //         for (const reader of readers) {
-    //             for (const account of accounts) {
-    //                 const state = accountsState[account.address];
-    //                 if (state && state.wallet) {
-    //                     const msgs =
-    //                         await reader.retrieveMessageHistoryByBounds(
-    //                             state.wallet!.wallet.addressToUint256(
-    //                                 account.address
-    //                             )
-    //                         );
-    //                     const sentMsgs =
-    //                         await reader.retrieveMessageHistoryByBounds(
-    //                             Ylide.getSentAddress(
-    //                                 state.wallet!.wallet.addressToUint256(
-    //                                     account.address
-    //                                 )
-    //                             )
-    //                         );
-    //                     console.log(
-    //                         `${account.address} in ${reader.constructor.name}: `,
-    //                         msgs
-    //                     );
-    //                     // console.log(
-    //                     //     `Sent from ${account.address} in ${reader.constructor.name}: `,
-    //                     //     sentMsgs
-    //                     // );
-    //                 }
-    //             }
-    //         }
-    //     })();
-    // }, [accounts, accountsState, readers, sent]);
 
     useEffect(() => {
         for (const reader of readers) {
             for (const account of accounts) {
                 const state = accountsState[account.address];
                 if (state && state.wallet) {
-                    // console.log(
-                    //     "add: ",
-                    //     reader.constructor.name,
-                    //     account.address
-                    // );
-
-                    inbox.addReader(reader, {
-                        address: state.wallet.wallet.addressToUint256(
-                            account.address
-                        ),
-                        type: BlockchainSourceSubjectType.RECIPIENT,
-                    });
-                    sent.addReader(reader, {
-                        type: BlockchainSourceSubjectType.RECIPIENT,
-                        address: Ylide.getSentAddress(
-                            state.wallet.wallet.addressToUint256(
+                    inbox.addReader(
+                        reader,
+                        {
+                            address: state.wallet.wallet.addressToUint256(
                                 account.address
-                            )
-                        ),
-                    });
-                } else {
-                    console.log("not found: ", account.address);
+                            ),
+                            type: BlockchainSourceSubjectType.RECIPIENT,
+                        },
+                        10000
+                    );
+                    inbox.addReader(
+                        reader,
+                        {
+                            address: state.wallet.wallet.addressToUint256(
+                                account.address
+                            ),
+                            type: BlockchainSourceSubjectType.AUTHOR,
+                        },
+                        60000
+                    );
+                    sent.addReader(
+                        reader,
+                        {
+                            type: BlockchainSourceSubjectType.RECIPIENT,
+                            address: Ylide.getSentAddress(
+                                state.wallet.wallet.addressToUint256(
+                                    account.address
+                                )
+                            ),
+                        },
+                        300000
+                    );
                 }
             }
         }
@@ -390,12 +344,12 @@ export function App() {
                         //     reader.constructor.name,
                         //     account.address
                         // );
-                        inbox.removeReader(reader, {
-                            address: state.wallet.wallet.addressToUint256(
-                                account.address
-                            ),
-                            type: BlockchainSourceSubjectType.RECIPIENT,
-                        });
+                        // inbox.removeReader(reader, {
+                        //     address: state.wallet.wallet.addressToUint256(
+                        //         account.address
+                        //     ),
+                        //     type: BlockchainSourceSubjectType.RECIPIENT,
+                        // });
                         sent.removeReader(reader, {
                             type: BlockchainSourceSubjectType.RECIPIENT,
                             address: Ylide.getSentAddress(
@@ -410,89 +364,29 @@ export function App() {
         };
     }, [accounts, accountsState, inbox, readers, sent]);
 
-    // useEffect(() => {
-    //     (async () => {
-    //         const isAvailable =
-    //             await everscaleWalletFactory.isWalletAvailable();
-    //         setIsWalletAvailable(isAvailable);
-    //     })();
-    // }, []);
-
-    // useEffect(() => {
-    //     if (!reader || !account || keys.length === 0) {
-    //         return;
-    //     }
-    //     (async () => {
-    //         const key = keys[0].key;
-    //         const pk = await reader.extractPublicKeyFromAddress(
-    //             account.address
-    //         );
-    //         if (!pk) {
-    //             setIsKeyRegistered(false);
-    //         } else {
-    //             if (
-    //                 pk.bytes.length === key.publicKey.length &&
-    //                 pk.bytes.every((e, idx) => e === key.publicKey[idx])
-    //             ) {
-    //                 setIsKeyRegistered(true);
-    //             } else {
-    //                 setIsKeyRegistered(false);
-    //             }
-    //         }
-    //     })();
-    // }, [account, keys, reader]);
-
-    // const connectAccount = useCallback(async () => {
-    //     if (!sender) {
-    //         return;
-    //     }
-    //     setAccount(await sender.requestAuthentication());
-    // }, [sender]);
-
-    // const disconnectAccount = useCallback(async () => {
-    //     if (!sender) {
-    //         return;
-    //     }
-    //     await sender.disconnectAccount();
-    //     setAccount(null);
-    // }, [sender]);
-
-    // const createKey = useCallback(async () => {
-    //     if (!account) {
-    //         return;
-    //     }
-    //     const passwordForKey = prompt(`Enter password for creating first key`);
-    //     if (!passwordForKey) {
-    //         return;
-    //     }
-    //     const key = await keystore.create(
-    //         "For your first key",
-    //         "evm",
-    //         "web3",
-    //         account.address,
-    //         passwordForKey
-    //     );
-    //     await key.storeUnencrypted(passwordForKey);
-    //     await keystore.save();
-    //     setKeys([...keystore.keys]);
-    // }, [account, keystore]);
-
-    // const deleteKeys = useCallback(async () => {
-    //     for (const key of keystore.keys) {
-    //         await keystore.delete(key);
-    //     }
-    //     setKeys([...keystore.keys]);
-    // }, [keystore]);
-
-    // const registerPublicKey = useCallback(async () => {
-    //     if (!keys.length || !sender) {
-    //         return;
-    //     }
-    //     const key = keys[0].key;
-    //     await sender.attachPublicKey(key.publicKey, {
-    //         network: EVMNetwork.LOCAL_HARDHAT,
-    //     });
-    // }, [keys, sender]);
+    const broadcast = useCallback(async () => {
+        if (!ylide) {
+            return;
+        }
+        const fromAccount = accounts.find((a) => a.address === from);
+        if (!fromAccount) {
+            return;
+        }
+        const state = accountsState[fromAccount.address];
+        if (!state) {
+            return;
+        }
+        const content = MessageContentV3.plain(subject, text);
+        const msgId = await ylide.broadcastMessage(
+            {
+                wallet: state.wallet!.wallet,
+                sender: (await state.wallet!.wallet.getAuthenticatedAccount())!,
+                content,
+            },
+            { network: EVMNetwork.ARBITRUM }
+        );
+        alert(`Sent ${msgId}`);
+    }, [accounts, accountsState, from, subject, text, ylide]);
 
     const send = useCallback(async () => {
         if (!ylide) {
@@ -514,7 +408,7 @@ export function App() {
                 content,
                 recipients: [recipient],
             },
-            { network: EVMNetwork.LOCAL_HARDHAT }
+            { network: EVMNetwork.ARBITRUM }
         );
         alert(`Sent ${msgId}`);
     }, [accounts, accountsState, from, recipient, subject, text, ylide]);
@@ -587,13 +481,23 @@ export function App() {
     const publishKey = useCallback(
         async (wallet: string, address: string, key: Uint8Array) => {
             const account = accountsState[address];
-            account.wallet!.wallet.attachPublicKey(key, {
-                address,
-                network: EVMNetwork.LOCAL_HARDHAT,
-            });
+            account.wallet!.wallet.attachPublicKey(
+                { address, blockchain: "", publicKey: null },
+                key,
+                {
+                    address,
+                    network: EVMNetwork.ARBITRUM,
+                }
+            );
         },
         [accountsState]
     );
+
+    useEffect(() => {
+        if (accounts.length && !from) {
+            setFrom(accounts[0].address);
+        }
+    }, [accounts, from]);
 
     const addAccount = useCallback(
         async (factory: WalletControllerFactory) => {
@@ -630,9 +534,12 @@ export function App() {
             const reader = m.source.reader;
             const acc = accounts
                 .map((account) => {
-                    const accountUint256Address = accountsState[
-                        account.address
-                    ].wallet!.wallet.addressToUint256(account.address);
+                    const state = accountsState[account.address];
+                    if (!state || !state.wallet) {
+                        return null;
+                    }
+                    const accountUint256Address =
+                        state.wallet.wallet.addressToUint256(account.address);
                     const sentAddress = Ylide.getSentAddress(
                         accountUint256Address
                     );
@@ -648,8 +555,7 @@ export function App() {
                     return null;
                 })
                 .find((t) => !!t);
-            console.log("acc: ", acc);
-            if (!acc) {
+            if (!acc && !m.link.isBroadcast) {
                 return;
             }
             const content = await reader.retrieveAndVerifyMessageContent(
@@ -659,12 +565,17 @@ export function App() {
                 return alert("Content not found");
             }
             if (content.corrupted) {
+                console.log("content: ", content);
                 return alert("Content is corrupted");
             }
             const decodedContent = await ylide.decryptMessageContent(
+                {
+                    address: acc?.account.address || "",
+                    blockchain: "",
+                    publicKey: null,
+                },
                 m.link,
-                content,
-                acc.account.address
+                content
             );
             alert(decodedContent.subject + "\n\n" + decodedContent.content);
         },
@@ -974,6 +885,12 @@ export function App() {
                             >
                                 Send
                             </button>
+                            <button
+                                onClick={() => broadcast()}
+                                style={{ width: 120, height: 30 }}
+                            >
+                                Broadcast
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -986,6 +903,26 @@ export function App() {
                     )}
                 >
                     <h3 style={header}>Inbox</h3>
+                    <div>
+                        <button
+                            onClick={(e) => {
+                                e.preventDefault();
+                                inbox.goPreviousPage();
+                            }}
+                            disabled={!inbox.isPreviousPageAvailable()}
+                        >
+                            Prev
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.preventDefault();
+                                inbox.goNextPage();
+                            }}
+                            disabled={!inbox.isNextPageAvailable()}
+                        >
+                            Next
+                        </button>
+                    </div>
                     <table className="tiny-table">
                         <thead>
                             <tr>
@@ -1000,7 +937,10 @@ export function App() {
                         <tbody>
                             {inboxMessages.map((m) => (
                                 <tr key={m.link.msgId}>
-                                    <td>{m.link.msgId.substring(0, 10)}...</td>
+                                    <td>
+                                        {m.link.isBroadcast ? "+" : "-"}{" "}
+                                        {m.link.msgId.substring(0, 10)}...
+                                    </td>
                                     <td>{m.link.blockchain}</td>
                                     <td>
                                         {m.link.senderAddress.substring(0, 10)}
